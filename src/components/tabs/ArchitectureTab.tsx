@@ -1,9 +1,35 @@
+import { useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { EducationCallout } from "@/components/EducationCallout";
-import { archNodes, archEdges } from "@/lib/mock-data";
+import { Loader2 } from "lucide-react";
+import { runSpeedAudit } from "@/lib/api/audit.functions";
+import { archEdges } from "@/lib/mock-data";
 
-export function ArchitectureTab() {
+export function ArchitectureTab({ url }: { url: string }) {
+  const fn = useServerFn(runSpeedAudit);
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["speed", url],
+    queryFn: () => fn({ data: { url } }),
+  });
+
+  if (isLoading) {
+    return (
+      <Card className="p-10 bg-card border-border flex items-center justify-center text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Inferring infrastructure…
+      </Card>
+    );
+  }
+  if (error || !data) {
+    return (
+      <Card className="p-6 bg-card border-destructive/40 text-sm text-destructive">
+        Could not reach the target URL for architecture analysis.
+      </Card>
+    );
+  }
+
+  const archNodes = data.archNodes;
   const byId = Object.fromEntries(archNodes.map(n => [n.id, n]));
 
   return (
@@ -14,9 +40,9 @@ export function ArchitectureTab() {
 
         <div className="overflow-x-auto">
           <svg viewBox="0 0 820 320" className="w-full h-[320px] min-w-[760px]">
-            {/* edges */}
             {archEdges.map(([from, to], i) => {
               const a = byId[from], b = byId[to];
+              if (!a || !b) return null;
               const detected = a.detected && b.detected;
               return (
                 <line
@@ -29,7 +55,6 @@ export function ArchitectureTab() {
                 />
               );
             })}
-            {/* nodes */}
             {archNodes.map(n => (
               <g key={n.id}>
                 <rect
@@ -69,9 +94,8 @@ export function ArchitectureTab() {
       </Card>
 
       <EducationCallout title="This is your inferred production stack">
-        Your traffic flows browser → origin server directly. There's no CDN absorbing static asset requests,
-        and no load balancer in front of your app. The red nodes are the gaps that hurt you at scale: they're
-        cheap to add now, and excruciating to add after you have real traffic depending on uptime.
+        Inferred from live response headers on <strong>{url}</strong>. Red nodes are the gaps that hurt you at
+        scale — they're cheap to add now and painful to add after real traffic depends on uptime.
       </EducationCallout>
     </div>
   );
