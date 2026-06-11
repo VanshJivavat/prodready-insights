@@ -143,4 +143,26 @@
   .glow-primary {
     box-shadow: 0 0 60px -10px oklch(0.72 0.18 160 / 0.4);
   }
+  .print-only { display: none; }
 }
+
+@media print {
+  @page { margin: 18mm; size: A4; }
+  html, body {
+    background: white !important;
+    color: black !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .no-print, .no-print * { display: none !important; }
+  .screen-only { display: none !important; }
+  .print-only { display: block !important; }
+  .print-root { display: block !important; min-height: auto !important; }
+  main { overflow: visible !important; }
+  header.sticky { position: static !important; }
+  /* Avoid awkward breaks */
+  section, .card, [data-slot="card"] { break-inside: avoid; page-break-inside: avoid; }
+  h1, h2, h3 { color: black !important; }
+  button { display: none !important; }
+}
+

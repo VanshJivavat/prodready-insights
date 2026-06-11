@@ -11,7 +11,7 @@ import { StressTab } from "@/components/tabs/StressTab";
 import { BalancerTab } from "@/components/tabs/BalancerTab";
 import { CostTab } from "@/components/tabs/CostTab";
 import { ArchitectureTab } from "@/components/tabs/ArchitectureTab";
-import { Sparkles, Share2, RotateCw, ArrowLeft } from "lucide-react";
+import { Sparkles, Share2, RotateCw, ArrowLeft, Printer } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { LicenseGate } from "@/components/LicenseGate";
@@ -40,9 +40,9 @@ function Dashboard() {
   const activeLabel = moduleList.find(m => m.id === active)?.label ?? "";
 
   return (
-    <div className="min-h-screen flex bg-background">
+    <div className="min-h-screen flex bg-background print-root">
       {/* Sidebar */}
-      <aside className="w-[240px] shrink-0 border-r border-border bg-sidebar flex flex-col">
+      <aside className="w-[240px] shrink-0 border-r border-border bg-sidebar flex flex-col no-print">
         <div className="p-5 border-b border-border">
           <Link to="/" className="flex items-center gap-2 font-semibold text-sm">
             <div className="h-7 w-7 rounded-lg bg-primary/15 grid place-items-center">
@@ -87,6 +87,9 @@ function Dashboard() {
           }}>
             <Share2 className="h-3.5 w-3.5 mr-2" /> Share Report
           </Button>
+          <Button variant="outline" size="sm" className="w-full justify-start" onClick={() => window.print()}>
+            <Printer className="h-3.5 w-3.5 mr-2" /> Export PDF Report
+          </Button>
           <Link to="/analyzing" search={{ url }} className="block">
             <Button variant="default" size="sm" className="w-full justify-start">
               <RotateCw className="h-3.5 w-3.5 mr-2" /> Run Again
@@ -102,7 +105,7 @@ function Dashboard() {
 
       {/* Main */}
       <main className="flex-1 min-w-0 overflow-x-auto">
-        <header className="border-b border-border px-8 py-5 flex items-center justify-between sticky top-0 bg-background/80 backdrop-blur z-10">
+        <header className="border-b border-border px-8 py-5 flex items-center justify-between sticky top-0 bg-background/80 backdrop-blur z-10 no-print">
           <div>
             <h1 className="text-xl font-bold">{activeLabel}</h1>
             <p className="text-xs text-muted-foreground mt-0.5">
@@ -126,8 +129,23 @@ function Dashboard() {
           </div>
         </header>
 
+        {/* Print-only header */}
+        <div className="hidden print-only px-8 pt-8 pb-4 border-b border-border">
+          <h1 className="text-2xl font-bold">Web Architecture, Performance, & Security Audit Report</h1>
+          <p className="text-sm text-muted-foreground mt-1">Target: <span className="font-mono">{url}</span></p>
+          <p className="text-xs text-muted-foreground mt-0.5">Generated {new Date().toLocaleString()} · Overall score: {overallScore}/100</p>
+        </div>
+
         <div className="p-8 max-w-6xl">
-          {renderTab()}
+          <div className="screen-only">{renderTab()}</div>
+
+          {/* Full report for print: every section */}
+          <div className="hidden print-only space-y-10">
+            <section><h2 className="text-lg font-bold mb-3">1. Page Speed</h2><SpeedTab url={url} /></section>
+            <section><h2 className="text-lg font-bold mb-3">2. Security Headers</h2><SecurityTab url={url} /></section>
+            <section><h2 className="text-lg font-bold mb-3">3. Production Architecture</h2><ArchitectureTab url={url} /></section>
+            <section><h2 className="text-lg font-bold mb-3">4. Cost Projection</h2><CostTab /></section>
+          </div>
         </div>
       </main>
     </div>
