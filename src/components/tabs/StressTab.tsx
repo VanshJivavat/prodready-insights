@@ -1,49 +1,46 @@
 import { useEffect, useRef, useState } from "react";
+import { useServerFn } from "@tanstack/react-start";
 import { Card } from "@/components/ui/card";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { EducationCallout } from "@/components/EducationCallout";
+import { runLatencyProbe } from "@/lib/api/audit.functions";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 
 interface Point { t: number; rt: number; users: number; }
 
-function simulatedRt(users: number): number {
-  // Stable until ~500 users, then climbs steeply
-  const base = 80 + users * 0.05;
-  const stress = users > 500 ? Math.pow(users - 500, 1.35) * 0.02 : 0;
-  const jitter = (Math.random() - 0.5) * 40;
-  return Math.max(40, base + stress + jitter);
-}
-
-export function StressTab() {
+export function StressTab({ url }: { url: string }) {
+  const probe = useServerFn(runLatencyProbe);
   const [targetUsers, setTargetUsers] = useState(1000);
   const [running, setRunning] = useState(false);
   const [data, setData] = useState<Point[]>([]);
-  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cancelRef = useRef(false);
 
-  function start() {
+  async function start() {
     setData([]);
     setRunning(true);
-    let t = 0;
-    tickRef.current = setInterval(() => {
-      t += 1;
-      const ramp = Math.min(1, t / 20);
+    cancelRef.current = false;
+    const totalTicks = 12;
+    for (let t = 1; t <= totalTicks && !cancelRef.current; t++) {
+      const ramp = Math.min(1, t / totalTicks);
       const users = Math.round(targetUsers * ramp);
-      setData(prev => {
-        const next = [...prev, { t, rt: simulatedRt(users), users }];
-        return next.slice(-40);
-      });
-      if (t >= 40) {
-        setRunning(false);
-        if (tickRef.current) clearInterval(tickRef.current);
+      try {
+        const res = await probe({ data: { url, samples: 3 } });
+        // Amplify perceived response under simulated user load
+        const loadFactor = users > 500 ? 1 + Math.pow(users - 500, 1.1) * 0.0008 : 1;
+        const rt = Math.max(10, res.avg * loadFactor);
+        setData(prev => [...prev, { t, rt, users }].slice(-40));
+      } catch {
+        setData(prev => [...prev, { t, rt: 0, users }].slice(-40));
       }
-    }, 250);
+    }
+    setRunning(false);
   }
 
-  useEffect(() => () => { if (tickRef.current) clearInterval(tickRef.current); }, []);
+  useEffect(() => () => { cancelRef.current = true; }, []);
 
   const last = data[data.length - 1];
   const status: { label: string; tone: "good" | "warn" | "bad" } = !last
@@ -71,7 +68,7 @@ export function StressTab() {
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.3 0.02 250)" />
-                  <XAxis dataKey="t" stroke="oklch(0.68 0.02 250)" tick={{ fontSize: 11 }} label={{ value: "time (s)", position: "insideBottom", offset: -2, fill: "oklch(0.68 0.02 250)", fontSize: 11 }} />
+                  <XAxis dataKey="t" stroke="oklch(0.68 0.02 250)" tick={{ fontSize: 11 }} label={{ value: "tick", position: "insideBottom", offset: -2, fill: "oklch(0.68 0.02 250)", fontSize: 11 }} />
                   <YAxis stroke="oklch(0.68 0.02 250)" tick={{ fontSize: 11 }} label={{ value: "ms", angle: -90, position: "insideLeft", fill: "oklch(0.68 0.02 250)", fontSize: 11 }} />
                   <RTooltip contentStyle={{ background: "oklch(0.21 0.018 250)", border: "1px solid oklch(0.3 0.02 250)", borderRadius: 8 }} />
                   <ReferenceLine y={300} stroke="oklch(0.78 0.16 75)" strokeDasharray="4 4" />
@@ -101,7 +98,7 @@ export function StressTab() {
               </div>
             </div>
             <Button onClick={start} disabled={running} className="w-full">
-              {running ? "Running…" : "Start test"}
+              {running ? "Probing…" : "Start live test"}
             </Button>
             <div className="rounded-lg bg-muted/40 p-3 text-xs space-y-2">
               <div className="flex justify-between"><span className="text-muted-foreground">Peak response</span><span className="font-mono tabular-nums">{data.length ? `${Math.max(...data.map(d => d.rt)).toFixed(0)}ms` : "—"}</span></div>
@@ -112,10 +109,9 @@ export function StressTab() {
       </Card>
 
       <EducationCallout title="At what point does your server start dropping requests?">
-        Your origin holds steady until roughly <strong>500 concurrent users</strong>. After that, response times
-        climb non-linearly — every extra user makes every other user wait longer, because requests start queuing
-        behind slow database calls. By 2,000 users you're in "failing" territory and real users will see timeouts.
-        A single launch on Hacker News, a Reddit post, or a 30-second TV spot easily clears that bar.
+        Each tick fires real sequential requests against <strong>{url}</strong> and measures genuine latency.
+        Combined with a simulated concurrency multiplier, you can see when response times climb non-linearly —
+        every extra user makes every other user wait longer, because requests start queuing behind slow database calls.
       </EducationCallout>
     </div>
   );

@@ -1,8 +1,12 @@
-import { speedMetrics, waterfall } from "@/lib/mock-data";
+import { useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
 import { Card } from "@/components/ui/card";
 import { InfoTip } from "@/components/InfoTip";
 import { EducationCallout } from "@/components/EducationCallout";
 import { StatusDot } from "@/components/StatusDot";
+import { Loader2 } from "lucide-react";
+import { runSpeedAudit } from "@/lib/api/audit.functions";
+import { waterfall } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 
 const typeColor: Record<string, string> = {
@@ -13,13 +17,34 @@ const typeColor: Record<string, string> = {
   font: "bg-chart-4",
 };
 
-export function SpeedTab() {
+export function SpeedTab({ url }: { url: string }) {
+  const fn = useServerFn(runSpeedAudit);
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["speed", url],
+    queryFn: () => fn({ data: { url } }),
+  });
+
   const maxEnd = Math.max(...waterfall.map(w => w.start + w.duration));
+
+  if (isLoading) {
+    return (
+      <Card className="p-10 bg-card border-border flex items-center justify-center text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Measuring real latency and payload…
+      </Card>
+    );
+  }
+  if (error || !data) {
+    return (
+      <Card className="p-6 bg-card border-destructive/40 text-sm text-destructive">
+        Could not reach the target URL for speed analysis.
+      </Card>
+    );
+  }
 
   return (
     <div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {speedMetrics.map(m => (
+        {data.metrics.map(m => (
           <Card key={m.label} className="p-5 bg-card border-border">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{m.label}</span>
@@ -35,7 +60,7 @@ export function SpeedTab() {
 
       <Card className="mt-6 p-6 bg-card border-border">
         <div className="flex items-center justify-between mb-5">
-          <h3 className="text-lg font-semibold">Asset Waterfall</h3>
+          <h3 className="text-lg font-semibold">Asset Waterfall <span className="text-xs font-normal text-muted-foreground ml-2">(typical pattern)</span></h3>
           <div className="flex gap-3 text-xs text-muted-foreground">
             {Object.entries(typeColor).map(([k, c]) => (
               <span key={k} className="flex items-center gap-1.5">
@@ -65,10 +90,10 @@ export function SpeedTab() {
       </Card>
 
       <EducationCallout title="What this means for your users">
-        Your largest content paints at <strong>3.2 seconds</strong>. Industry data says you lose roughly
-        <strong> 53% of mobile visitors</strong> before they see anything meaningful. The biggest culprits
-        here are the 1.4MB hero image (uncompressed) and a 920ms vendor bundle that blocks rendering.
-        Lazy-load images below the fold and split that bundle — you can shave 1.8 seconds off LCP without touching the server.
+        Your origin responded in <strong>{data.ttfb}ms</strong> with a {(data.bytes / 1024).toFixed(0)}KB HTML payload.
+        {data.server && <> Server reports <code className="font-mono text-xs">{data.server}</code>.</>}
+        {data.xCache && <> Edge cache status: <code className="font-mono text-xs">{data.xCache}</code>.</>}
+        {" "}Lazy-load below-the-fold images and split vendor bundles to bring LCP under the 2.5s threshold Google rewards.
       </EducationCallout>
     </div>
   );
