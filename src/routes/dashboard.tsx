@@ -14,6 +14,7 @@ import { ArchitectureTab } from "@/components/tabs/ArchitectureTab";
 import { Sparkles, Share2, RotateCw, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { LicenseGate } from "@/components/LicenseGate";
 
 export const Route = createFileRoute("/dashboard")({
   validateSearch: z.object({ url: z.string().default("https://example.com") }),
@@ -26,12 +27,12 @@ function Dashboard() {
 
   const renderTab = () => {
     switch (active) {
-      case "speed": return <SpeedTab />;
-      case "security": return <SecurityTab />;
-      case "stress": return <StressTab />;
-      case "balancer": return <BalancerTab />;
+      case "speed": return <SpeedTab url={url} />;
+      case "security": return <SecurityTab url={url} />;
+      case "stress": return <LicenseGate feature="Live Stress Test"><StressTab url={url} /></LicenseGate>;
+      case "balancer": return <LicenseGate feature="Load Balancer Simulation"><BalancerTab /></LicenseGate>;
       case "cost": return <CostTab />;
-      case "architecture": return <ArchitectureTab />;
+      case "architecture": return <ArchitectureTab url={url} />;
       default: return null;
     }
   };
