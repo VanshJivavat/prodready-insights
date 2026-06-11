@@ -1,10 +1,12 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { ScoreRing } from "@/components/ScoreRing";
 import { StatusDot } from "@/components/StatusDot";
-import { moduleList, overallScore } from "@/lib/mock-data";
+import type { Status } from "@/lib/mock-data";
 import { SpeedTab } from "@/components/tabs/SpeedTab";
 import { SecurityTab } from "@/components/tabs/SecurityTab";
 import { StressTab } from "@/components/tabs/StressTab";
@@ -15,15 +17,89 @@ import { Sparkles, Share2, RotateCw, ArrowLeft, Printer } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { LicenseGate } from "@/components/LicenseGate";
+import { runSecurityAudit, runSpeedAudit } from "@/lib/api/audit.functions";
 
 export const Route = createFileRoute("/dashboard")({
   validateSearch: z.object({ url: z.string().default("https://example.com") }),
   component: Dashboard,
 });
 
+function scoreToStatus(score: number): Status {
+  return score >= 75 ? "good" : score >= 50 ? "warn" : "bad";
+}
+
 function Dashboard() {
   const { url } = Route.useSearch();
   const [active, setActive] = useState("speed");
+  const [generatedAt, setGeneratedAt] = useState<string>("");
+  useEffect(() => { setGeneratedAt(new Date().toLocaleString()); }, []);
+
+  const securityFn = useServerFn(runSecurityAudit);
+  const speedFn = useServerFn(runSpeedAudit);
+
+  const securityQ = useQuery({
+    queryKey: ["security", url],
+    queryFn: () => securityFn({ data: { url } }),
+    staleTime: 60_000,
+  });
+  const speedQ = useQuery({
+    queryKey: ["speed", url],
+    queryFn: () => speedFn({ data: { url } }),
+    staleTime: 60_000,
+  });
+
+  const modules = useMemo(() => {
+    // Security score: % passing checks
+    const checks = securityQ.data?.checks ?? [];
+    const securityScore = checks.length
+      ? Math.round((checks.filter(c => c.pass).length / checks.length) * 100)
+      : 50;
+
+    // Speed score: derived from metric statuses
+    const metrics = speedQ.data?.metrics ?? [];
+    const metricScore = (s: string) => (s === "good" ? 100 : s === "warn" ? 60 : 25);
+    const speedScore = metrics.length
+      ? Math.round(metrics.reduce((a, m) => a + metricScore(m.status), 0) / metrics.length)
+      : 50;
+
+    // Architecture score: % of detected infra nodes
+    const nodes = speedQ.data?.archNodes ?? [];
+    const archScore = nodes.length
+      ? Math.round((nodes.filter(n => n.detected).length / nodes.length) * 100)
+      : 50;
+
+    // Stress: based on TTFB
+    const ttfb = speedQ.data?.ttfb ?? 0;
+    const stressScore = ttfb === 0 ? 50 : ttfb < 300 ? 90 : ttfb < 800 ? 65 : 35;
+
+    // Balancer: cdn/lb presence
+    const balancerScore =
+      (speedQ.data?.cdnDetected ? 50 : 0) + (speedQ.data?.cloudflareDetected ? 40 : 10);
+
+    // Cost: smaller pages + CDN = cheaper
+    const bytes = speedQ.data?.bytes ?? 0;
+    const sizeMb = bytes / (1024 * 1024);
+    const costScore = Math.max(
+      20,
+      Math.round(100 - sizeMb * 15 + (speedQ.data?.cdnDetected ? 10 : -10)),
+    );
+
+    const list = [
+      { id: "speed", label: "Page Speed", score: speedScore },
+      { id: "security", label: "Security", score: securityScore },
+      { id: "stress", label: "Stress Test", score: stressScore },
+      { id: "balancer", label: "Load Balancer", score: Math.min(100, balancerScore) },
+      { id: "cost", label: "Cost Projection", score: Math.min(100, costScore) },
+      { id: "architecture", label: "Architecture", score: archScore },
+    ];
+    return list.map(m => ({ ...m, status: scoreToStatus(m.score) }));
+  }, [securityQ.data, speedQ.data]);
+
+  const loading = securityQ.isLoading || speedQ.isLoading;
+  const overallScore = useMemo(
+    () => Math.round(modules.reduce((s, m) => s + m.score, 0) / modules.length),
+    [modules],
+  );
 
   const renderTab = () => {
     switch (active) {
@@ -37,7 +113,7 @@ function Dashboard() {
     }
   };
 
-  const activeLabel = moduleList.find(m => m.id === active)?.label ?? "";
+  const activeLabel = modules.find(m => m.id === active)?.label ?? "";
 
   return (
     <div className="min-h-screen flex bg-background print-root">
@@ -56,13 +132,13 @@ function Dashboard() {
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground">URL</div>
           <div className="mt-1 text-xs font-mono truncate" title={url}>{url}</div>
           <div className="mt-5 flex justify-center">
-            <ScoreRing score={overallScore} />
+            <ScoreRing score={loading ? 0 : overallScore} />
           </div>
         </div>
 
         <nav className="p-3 flex-1 overflow-y-auto">
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground px-3 pb-2">Modules</div>
-          {moduleList.map(m => (
+          {modules.map(m => (
             <button
               key={m.id}
               onClick={() => setActive(m.id)}
@@ -75,7 +151,7 @@ function Dashboard() {
                 <StatusDot status={m.status} />
                 <span className="truncate">{m.label}</span>
               </span>
-              <span className="text-[10px] tabular-nums text-muted-foreground">{m.score}</span>
+              <span className="text-[10px] tabular-nums text-muted-foreground">{loading ? "…" : m.score}</span>
             </button>
           ))}
         </nav>
@@ -109,11 +185,11 @@ function Dashboard() {
           <div>
             <h1 className="text-xl font-bold">{activeLabel}</h1>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Module {moduleList.findIndex(m => m.id === active) + 1} of {moduleList.length}
+              Module {modules.findIndex(m => m.id === active) + 1} of {modules.length}
             </p>
           </div>
           <div className="flex gap-1 overflow-x-auto">
-            {moduleList.map(m => (
+            {modules.map(m => (
               <button
                 key={m.id}
                 onClick={() => setActive(m.id)}
@@ -133,7 +209,7 @@ function Dashboard() {
         <div className="hidden print-only px-8 pt-8 pb-4 border-b border-border">
           <h1 className="text-2xl font-bold">Web Architecture, Performance, & Security Audit Report</h1>
           <p className="text-sm text-muted-foreground mt-1">Target: <span className="font-mono">{url}</span></p>
-          <p className="text-xs text-muted-foreground mt-0.5">Generated {new Date().toLocaleString()} · Overall score: {overallScore}/100</p>
+          <p className="text-xs text-muted-foreground mt-0.5" suppressHydrationWarning>Generated {generatedAt} · Overall score: {overallScore}/100</p>
         </div>
 
         <div className="p-8 max-w-6xl">
