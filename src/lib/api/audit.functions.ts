@@ -11,15 +11,49 @@ function normalize(u: string) {
   }
 }
 
-async function safeFetch(url: string, init?: RequestInit) {
+async function safeFetch(url: string, init?: RequestInit, timeoutMs = 8000) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: ctrl.signal, redirect: "follow" });
   } finally {
     clearTimeout(timer);
   }
 }
+
+// Per-check education content
+const securityEducation: Record<string, { simple: string; risk: string; fix: string }> = {
+  "HTTPS": {
+    simple: "HTTPS encrypts traffic between the browser and your server so nobody on the network can read it.",
+    risk: "Without HTTPS, passwords, cookies, and personal data travel in plain text and can be stolen by anyone on the same network.",
+    fix: "Get a free TLS certificate (e.g. Let's Encrypt) and redirect all HTTP traffic to HTTPS at the server or CDN.",
+  },
+  "HSTS": {
+    simple: "HTTP Strict Transport Security forces a user's browser to always connect using HTTPS, ignoring any unencrypted HTTP request.",
+    risk: "If a user types your URL on public Wi-Fi, an attacker can intercept the initial HTTP request before it switches to HTTPS and steal unencrypted data.",
+    fix: "Add this header in production:\nStrict-Transport-Security: max-age=31536000; includeSubDomains; preload",
+  },
+  "Content-Security-Policy": {
+    simple: "Think of CSP as a strict bouncer for your website. It controls exactly which external scripts, images, or assets are allowed to load on your page.",
+    risk: "Without it, a hacker could inject a malicious script into your site to steal user passwords or track keystrokes without your knowledge.",
+    fix: "Add a Content-Security-Policy header (or <meta> tag) such as:\nContent-Security-Policy: default-src 'self'; script-src 'self' https://trustedscripts.com;",
+  },
+  "X-Frame-Options": {
+    simple: "This stops other websites from framing or embedding your webpage inside theirs.",
+    risk: "Attackers use a trick called \"Clickjacking\". They load your real website inside an invisible frame on a malicious page, tricking users into clicking buttons they didn't intend to.",
+    fix: "Send this HTTP header from your server:\nX-Frame-Options: DENY  (or SAMEORIGIN)\nOr use CSP: frame-ancestors 'none';",
+  },
+  "CORS Configured": {
+    simple: "CORS decides which other websites are allowed to read responses from your API in a logged-in user's browser.",
+    risk: "Wildcard CORS (Access-Control-Allow-Origin: *) lets any site read responses from your API on behalf of a logged-in visitor.",
+    fix: "Restrict the header to your own origins, e.g.:\nAccess-Control-Allow-Origin: https://yourapp.com",
+  },
+  "Secure Cookie Flags": {
+    simple: "Cookie flags tell the browser to keep cookies away from JavaScript and only send them over HTTPS.",
+    risk: "Cookies without HttpOnly/Secure can be stolen by injected JavaScript or sniffed over plain HTTP.",
+    fix: "Set cookies with the Secure, HttpOnly and SameSite=Lax flags from your server.",
+  },
+};
 
 // ---------- SECURITY ----------
 export const runSecurityAudit = createServerFn({ method: "POST" })
@@ -28,7 +62,7 @@ export const runSecurityAudit = createServerFn({ method: "POST" })
     const url = normalize(data.url);
     let headers = new Headers();
     let ok = false;
-    let isHttps = url.startsWith("https://");
+    const isHttps = url.startsWith("https://");
     try {
       const res = await safeFetch(url, { method: "GET" });
       headers = res.headers;
@@ -44,14 +78,21 @@ export const runSecurityAudit = createServerFn({ method: "POST" })
     const xfo = get("x-frame-options");
     const acao = get("access-control-allow-origin");
 
-    const checks = [
-      { name: "HTTPS", pass: isHttps, risk: "Without HTTPS, every password and cookie travels in plain text." },
-      { name: "HSTS", pass: !!hsts, risk: "Browsers may downgrade to HTTP, opening you to MITM attacks on public WiFi." },
-      { name: "Content-Security-Policy", pass: !!csp, risk: "A single XSS bug can run any script on your page — including from a hijacked third-party." },
-      { name: "X-Frame-Options", pass: !!xfo || /frame-ancestors/i.test(csp), risk: "Prevents your site from being embedded in a hostile iframe (clickjacking)." },
-      { name: "CORS Configured", pass: acao !== "*", risk: "Overly permissive CORS lets any site read responses from your API in a logged-in browser." },
-      { name: "Secure Cookie Flags", pass: !setCookie || (/Secure/i.test(setCookie) && /HttpOnly/i.test(setCookie)), risk: "Cookies without HttpOnly/Secure can be stolen by JavaScript or sent over plain HTTP." },
+    const raw = [
+      { name: "HTTPS", pass: isHttps },
+      { name: "HSTS", pass: !!hsts },
+      { name: "Content-Security-Policy", pass: !!csp },
+      { name: "X-Frame-Options", pass: !!xfo || /frame-ancestors/i.test(csp) },
+      { name: "CORS Configured", pass: acao !== "*" },
+      { name: "Secure Cookie Flags", pass: !setCookie || (/Secure/i.test(setCookie) && /HttpOnly/i.test(setCookie)) },
     ];
+
+    const checks = raw.map(c => ({
+      ...c,
+      simple: securityEducation[c.name]?.simple ?? "",
+      risk: securityEducation[c.name]?.risk ?? "",
+      fix: securityEducation[c.name]?.fix ?? "",
+    }));
 
     return { reachable: ok, checks };
   });
@@ -69,6 +110,7 @@ export const runSpeedAudit = createServerFn({ method: "POST" })
     let via = "";
     let xCache = "";
     let xPowered = "";
+    let cfRay = "";
     let ok = false;
     let status = 0;
     try {
@@ -79,6 +121,7 @@ export const runSpeedAudit = createServerFn({ method: "POST" })
       via = res.headers.get("via") ?? "";
       xCache = res.headers.get("x-cache") ?? res.headers.get("cf-cache-status") ?? "";
       xPowered = res.headers.get("x-powered-by") ?? "";
+      cfRay = res.headers.get("cf-ray") ?? "";
       const body = await res.arrayBuffer();
       bytes = body.byteLength;
       downloadMs = Date.now() - start - ttfb;
@@ -102,19 +145,33 @@ export const runSpeedAudit = createServerFn({ method: "POST" })
       { label: "Page Size", value: sizeMb >= 1 ? `${sizeMb.toFixed(1)} MB` : `${(bytes / 1024).toFixed(0)} KB`, status: status_size, hint: "Bytes downloaded for the HTML document only." },
     ];
 
-    // Architecture inference
-    const cdnDetected = !!via || !!xCache || /cloudflare|cloudfront|akamai|fastly|vercel|netlify/i.test(server);
-    const lbDetected = !!via || /aws|gcp|cloudflare|nginx/i.test(server);
+    // CDN / infra inference
+    const cloudflareDetected = !!cfRay || /cloudflare/i.test(server) || /cloudflare/i.test(via);
+    const fastlyDetected = /fastly/i.test(server) || /fastly/i.test(via) || /fastly/i.test(xCache);
+    const akamaiDetected = /akamai/i.test(server) || /akamai/i.test(via);
+    const otherCdn = /cloudfront|vercel|netlify|bunny|keycdn|stackpath/i.test(server + via + xCache);
+    const cdnDetected = cloudflareDetected || fastlyDetected || akamaiDetected || otherCdn || !!xCache;
+    const lbDetected = cdnDetected || /aws|gcp|nginx|envoy|haproxy/i.test(server) || !!via;
+
+    const cdnNote = cdnDetected
+      ? `Detected via ${cloudflareDetected ? "Cloudflare" : fastlyDetected ? "Fastly" : akamaiDetected ? "Akamai" : (xCache || server || via)}`
+      : "Missing/Undetected — static assets appear to be served straight from the origin server, increasing server load.";
+
+    const cfNote = cloudflareDetected
+      ? `Cloudflare detected${cfRay ? ` (cf-ray: ${cfRay.slice(0, 8)}…)` : ""}`
+      : "Missing/Undetected — no Cloudflare headers (cf-ray / server: cloudflare).";
+
     const archNodes = [
       { id: "browser", label: "Browser", detected: true, x: 60, y: 160, note: "End user" },
-      { id: "cdn", label: "CDN", detected: cdnDetected, x: 220, y: 160, note: cdnDetected ? `Detected via ${via || xCache || server}` : "Not detected — assets served from origin" },
-      { id: "lb", label: "Load Balancer", detected: lbDetected, x: 380, y: 160, note: lbDetected ? "Inferred from response headers" : "Not detected — single point of failure" },
-      { id: "server", label: server ? server.split(" ")[0] : "App Server", detected: ok, x: 540, y: 160, note: ok ? `Origin reachable (${status})` : "Origin unreachable" },
-      { id: "db", label: "Database", detected: ok, x: 700, y: 90, note: "Inferred from response patterns" },
-      { id: "api", label: "3rd-party APIs", detected: true, x: 700, y: 230, note: xPowered ? `Powered-By: ${xPowered}` : "Analytics, fonts" },
+      { id: "cdn", label: "CDN", detected: cdnDetected, x: 220, y: 90, note: cdnNote },
+      { id: "cloudflare", label: "Cloudflare", detected: cloudflareDetected, x: 220, y: 230, note: cfNote },
+      { id: "lb", label: "Load Balancer", detected: lbDetected, x: 400, y: 160, note: lbDetected ? "Inferred from response headers" : "Not detected — single point of failure" },
+      { id: "server", label: server ? server.split(" ")[0].slice(0, 16) : "App Server", detected: ok, x: 560, y: 160, note: ok ? `Origin reachable (${status})` : "Origin unreachable" },
+      { id: "db", label: "Database", detected: ok, x: 720, y: 90, note: "Inferred from response patterns" },
+      { id: "api", label: "3rd-party APIs", detected: true, x: 720, y: 230, note: xPowered ? `Powered-By: ${xPowered}` : "Analytics, fonts" },
     ];
 
-    return { reachable: ok, status, ttfb, bytes, server, via, xCache, xPowered, metrics, archNodes };
+    return { reachable: ok, status, ttfb, bytes, server, via, xCache, xPowered, cfRay, cloudflareDetected, cdnDetected, metrics, archNodes };
   });
 
 // ---------- STRESS / LATENCY PROBE ----------
@@ -123,13 +180,23 @@ export const runLatencyProbe = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const url = normalize(data.url);
     const samples: number[] = [];
+    const statuses: number[] = [];
+    let wafBlocks = 0;
+    let connectionDrops = 0;
     for (let i = 0; i < data.samples; i++) {
       const t = Date.now();
       try {
-        await safeFetch(url, { method: "GET" });
-        samples.push(Date.now() - t);
+        const res = await safeFetch(url, { method: "GET" }, 6000);
+        const ms = Date.now() - t;
+        samples.push(ms);
+        statuses.push(res.status);
+        if (res.status === 429 || res.status === 403 || res.status === 503) {
+          wafBlocks++;
+        }
       } catch {
         samples.push(-1);
+        statuses.push(0);
+        connectionDrops++;
       }
     }
     const ok = samples.filter(s => s >= 0);
@@ -137,5 +204,10 @@ export const runLatencyProbe = createServerFn({ method: "POST" })
     const peak = ok.length ? Math.max(...ok) : 0;
     const min = ok.length ? Math.min(...ok) : 0;
     const jitter = peak - min;
-    return { samples, avg, peak, min, jitter, failures: samples.length - ok.length };
+    const wafDetected = wafBlocks + connectionDrops >= Math.max(1, Math.ceil(data.samples / 3));
+    return {
+      samples, statuses, avg, peak, min, jitter,
+      failures: samples.length - ok.length,
+      wafBlocks, connectionDrops, wafDetected,
+    };
   });
