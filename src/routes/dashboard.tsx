@@ -32,6 +32,7 @@ function Dashboard() {
   const { url } = Route.useSearch();
   const [active, setActive] = useState("speed");
   const [generatedAt, setGeneratedAt] = useState<string>("");
+  const [costVisitors, setCostVisitors] = useState(500_000);
   useEffect(() => { setGeneratedAt(new Date().toLocaleString()); }, []);
 
   const securityFn = useServerFn(runSecurityAudit);
