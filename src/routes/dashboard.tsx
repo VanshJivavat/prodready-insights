@@ -221,7 +221,7 @@ function Dashboard() {
             <section><h2 className="text-lg font-bold mb-3">1. Page Speed</h2><SpeedTab url={url} /></section>
             <section><h2 className="text-lg font-bold mb-3">2. Security Headers</h2><SecurityTab url={url} /></section>
             <section><h2 className="text-lg font-bold mb-3">3. Production Architecture</h2><ArchitectureTab url={url} /></section>
-            <section><h2 className="text-lg font-bold mb-3">4. Cost Projection</h2><CostTab /></section>
+            <section><h2 className="text-lg font-bold mb-3">4. Cost Projection</h2><CostTab pageSizeBytes={speedQ.data?.bytes} visitors={costVisitors} onVisitorsChange={setCostVisitors} /></section>
           </div>
         </div>
       </main>
