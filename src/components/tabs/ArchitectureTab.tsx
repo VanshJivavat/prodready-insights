@@ -61,22 +61,22 @@ export function ArchitectureTab({ url }: { url: string }) {
         </p>
 
         <div className="overflow-x-auto">
-          <svg viewBox="0 0 760 360" className="w-full h-[360px] min-w-[720px]">
+          <svg viewBox="0 0 760 400" className="w-full h-[400px] min-w-[720px]">
             {/* Zone backgrounds */}
             <g>
-              <rect x="20" y="40" width="720" height="130" rx="14"
+              <rect x="20" y="40" width="720" height="140" rx="14"
                 fill="oklch(0.72 0.18 160 / 0.04)" stroke="oklch(0.72 0.18 160 / 0.25)" strokeDasharray="4 4" />
               <text x="36" y="62" fontSize="11" fontWeight={700} fill="oklch(0.78 0.18 160)" letterSpacing="1">
                 VISIBLE AT EDGE · scanned from live headers
               </text>
-              <rect x="20" y="190" width="720" height="150" rx="14"
+              <rect x="20" y="200" width="720" height="180" rx="14"
                 fill="oklch(0.72 0.14 250 / 0.04)" stroke="oklch(0.72 0.14 250 / 0.25)" strokeDasharray="4 4" />
-              <text x="36" y="212" fontSize="11" fontWeight={700} fill="oklch(0.78 0.14 250)" letterSpacing="1">
+              <text x="36" y="222" fontSize="11" fontWeight={700} fill="oklch(0.78 0.14 250)" letterSpacing="1">
                 INFERRED BACKEND · standard production pattern
               </text>
             </g>
 
-            {/* Edges */}
+            {/* Orthogonal edges */}
             {archEdges.map(([from, to], i) => {
               const a = byId[from], b = byId[to];
               if (!a || !b) return null;
@@ -86,10 +86,26 @@ export function ArchitectureTab({ url }: { url: string }) {
                 : (a.detected && b.detected)
                 ? "oklch(0.72 0.18 160)"
                 : "oklch(0.62 0.22 25 / 0.55)";
+
+              const dx = b.x - a.x, dy = b.y - a.y;
+              let d: string;
+              if (Math.abs(dy) < 5) {
+                const x1 = a.x + (dx > 0 ? 60 : -60);
+                const x2 = b.x + (dx > 0 ? -60 : 60);
+                d = `M ${x1} ${a.y} L ${x2} ${b.y}`;
+              } else if (Math.abs(dx) < 5) {
+                const y1 = a.y + (dy > 0 ? 28 : -28);
+                const y2 = b.y + (dy > 0 ? -28 : 28);
+                d = `M ${a.x} ${y1} L ${b.x} ${y2}`;
+              } else {
+                // L-shape: drop vertically from a, then horizontal to b's side
+                const y1 = a.y + (dy > 0 ? 28 : -28);
+                const midY = (a.y + b.y) / 2;
+                const x2 = b.x + (dx > 0 ? -60 : 60);
+                d = `M ${a.x} ${y1} L ${a.x} ${midY} L ${x2} ${midY} L ${x2} ${b.y}`;
+              }
               return (
-                <line key={i}
-                  x1={a.x + 60} y1={a.y}
-                  x2={b.x - 60} y2={b.y}
+                <path key={i} d={d} fill="none"
                   stroke={stroke} strokeWidth={2}
                   strokeDasharray={dashed ? "6 4" : "0"} />
               );
