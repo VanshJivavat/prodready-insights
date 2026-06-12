@@ -153,22 +153,47 @@ export const runSpeedAudit = createServerFn({ method: "POST" })
     const cdnDetected = cloudflareDetected || fastlyDetected || akamaiDetected || otherCdn || !!xCache;
     const lbDetected = cdnDetected || /aws|gcp|nginx|envoy|haproxy/i.test(server) || !!via;
 
-    const cdnNote = cdnDetected
-      ? `Detected via ${cloudflareDetected ? "Cloudflare" : fastlyDetected ? "Fastly" : akamaiDetected ? "Akamai" : (xCache || server || via)}`
-      : "Missing/Undetected — static assets appear to be served straight from the origin server, increasing server load.";
+    const cdnLabel = cloudflareDetected ? "Cloudflare CDN/WAF"
+      : fastlyDetected ? "Fastly CDN"
+      : akamaiDetected ? "Akamai CDN"
+      : "CDN / Edge Cache";
 
-    const cfNote = cloudflareDetected
-      ? `Cloudflare detected${cfRay ? ` (cf-ray: ${cfRay.slice(0, 8)}…)` : ""}`
-      : "Missing/Undetected — no Cloudflare headers (cf-ray / server: cloudflare).";
+    const cdnNote = cdnDetected
+      ? `Detected via ${cloudflareDetected ? "cf-ray header" : fastlyDetected ? "Fastly headers" : akamaiDetected ? "Akamai headers" : (xCache || server || via)}. Edge caching absorbs traffic before it reaches your origin.`
+      : "No CDN headers found. Every asset request travels to your origin, multiplying load and latency for distant users.";
+
+    const lbNote = cdnDetected
+      ? "Edge load balancing handled by your CDN provider — traffic distributed across global PoPs."
+      : lbDetected
+      ? "Reverse proxy / load balancer inferred from response headers."
+      : "No load balancer detected — your origin is a single point of failure.";
 
     const archNodes = [
-      { id: "browser", label: "Browser", detected: true, x: 60, y: 160, note: "End user" },
-      { id: "cdn", label: "CDN", detected: cdnDetected, x: 220, y: 90, note: cdnNote },
-      { id: "cloudflare", label: "Cloudflare", detected: cloudflareDetected, x: 220, y: 230, note: cfNote },
-      { id: "lb", label: "Load Balancer", detected: lbDetected, x: 400, y: 160, note: lbDetected ? "Inferred from response headers" : "Not detected — single point of failure" },
-      { id: "server", label: server ? server.split(" ")[0].slice(0, 16) : "App Server", detected: ok, x: 560, y: 160, note: ok ? `Origin reachable (${status})` : "Origin unreachable" },
-      { id: "db", label: "Database", detected: ok, x: 720, y: 90, note: "Inferred from response patterns" },
-      { id: "api", label: "3rd-party APIs", detected: true, x: 720, y: 230, note: xPowered ? `Powered-By: ${xPowered}` : "Analytics, fonts" },
+      // EDGE zone — actually detected from headers
+      { id: "browser", label: "Browser", detected: true, inferred: false, zone: "edge",
+        x: 80, y: 110, note: "End user device.",
+        cause: "Every visitor starts here.", impact: "Slow networks mean every wasted byte costs real seconds.", solution: "Optimize for the slowest 25% of users, not the fastest." },
+      { id: "cdn", label: cdnLabel, detected: cdnDetected, inferred: false, zone: "edge",
+        x: 260, y: 110, note: cdnNote,
+        cause: cdnDetected ? "A CDN sits between visitors and your server, serving cached copies from a nearby city." : "A visitor in Tokyo and one in São Paulo both wait for your single origin server.",
+        impact: cdnDetected ? "Lower latency worldwide, reduced origin bandwidth, automatic DDoS absorption." : "Sluggish pages for international users; one viral moment can knock the origin offline.",
+        solution: cdnDetected ? "Already in place — keep cache TTLs high for static assets." : "Put Cloudflare (free tier) or Fastly in front of your origin. Setup is ~15 minutes." },
+      { id: "lb", label: "Edge Load Balancer", detected: lbDetected, inferred: false, zone: "edge",
+        x: 440, y: 110, note: lbNote,
+        cause: lbDetected ? "A load balancer routes each request to a healthy backend instance." : "All traffic funnels into one server with no fallback.",
+        impact: lbDetected ? "Zero-downtime deploys, automatic failover when an instance dies." : "If the origin restarts or crashes, the entire site goes dark until a human intervenes.",
+        solution: lbDetected ? "Healthy — periodically test failover." : "Run at least two app instances behind a managed load balancer (AWS ALB, Cloudflare LB, Fly.io)." },
+
+      // BACKEND zone — inferred, not detectable from outside
+      { id: "server", label: server ? server.split(" ")[0].slice(0, 18) : "Application Server", detected: ok, inferred: true, zone: "backend",
+        x: 260, y: 240, note: ok ? `Origin reachable (HTTP ${status})${server ? ` · ${server}` : ""}` : "Origin unreachable from probe.",
+        cause: "Your app code runs here, handling requests and rendering pages.", impact: "Slow code or memory leaks cascade into every user request.", solution: "Add an APM (Sentry, Datadog) to surface slow endpoints in production." },
+      { id: "db", label: "Database", detected: true, inferred: true, zone: "backend",
+        x: 440, y: 240, note: "Standard production pattern — exact engine cannot be detected from outside.",
+        cause: "Most slow pages are actually slow database queries hiding behind a fast-looking API.", impact: "An un-indexed query on a 1M-row table can stall every concurrent visitor.", solution: "Enable slow query logs; add indexes for any query over 100ms." },
+      { id: "api", label: "3rd-party APIs", detected: true, inferred: true, zone: "backend",
+        x: 620, y: 240, note: xPowered ? `Powered-By: ${xPowered} · plus likely analytics, payments, fonts.` : "Likely: analytics, payments, fonts, email.",
+        cause: "Your page secretly waits on Google Analytics, Stripe, fonts, etc.", impact: "If one third-party slows down, your whole page slows down with it.", solution: "Load non-critical scripts with async/defer; self-host fonts." },
     ];
 
     return { reachable: ok, status, ttfb, bytes, server, via, xCache, xPowered, cfRay, cloudflareDetected, cdnDetected, metrics, archNodes };

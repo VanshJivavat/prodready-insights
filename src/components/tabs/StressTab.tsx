@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { Card } from "@/components/ui/card";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { EducationCallout } from "@/components/EducationCallout";
 import { ShieldCheck } from "lucide-react";
-import { runLatencyProbe } from "@/lib/api/audit.functions";
+import { runLatencyProbe, runSpeedAudit } from "@/lib/api/audit.functions";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
@@ -15,7 +17,16 @@ interface Point { t: number; rt: number; users: number; }
 
 export function StressTab({ url }: { url: string }) {
   const probe = useServerFn(runLatencyProbe);
+  const speedFn = useServerFn(runSpeedAudit);
+  const speedQ = useQuery({ queryKey: ["speed", url], queryFn: () => speedFn({ data: { url } }) });
+
+  const cdnDetected = !!speedQ.data?.cdnDetected;
+  const cloudflareDetected = !!speedQ.data?.cloudflareDetected;
+  const baselineTtfb = speedQ.data?.ttfb ?? null;
+  const cdnProtected = cdnDetected || (baselineTtfb !== null && baselineTtfb < 150);
+
   const [targetUsers, setTargetUsers] = useState(1000);
+  const [bypassCache, setBypassCache] = useState(false);
   const [running, setRunning] = useState(false);
   const [data, setData] = useState<Point[]>([]);
   const [waf, setWaf] = useState<null | { reason: string }>(null);
@@ -29,7 +40,7 @@ export function StressTab({ url }: { url: string }) {
     cancelRef.current = false;
 
     // Gentle baseline probe (3 samples)
-    let base = 0;
+    let base = baselineTtfb ?? 0;
     try {
       const res = await probe({ data: { url, samples: 3 } });
       if (res.wafDetected) {
@@ -39,23 +50,26 @@ export function StressTab({ url }: { url: string }) {
         setRunning(false);
         return;
       }
-      base = res.avg || 120;
+      base = res.avg || base || 120;
       setBaseline(base);
     } catch {
-      base = 200;
+      base = base || 200;
       setBaseline(base);
     }
 
-    // Mathematical latency curve from baseline as slider ramps
+    // Choose a curve model based on edge protection + user toggle
+    const edgeAbsorbs = cdnProtected && !bypassCache;
     const totalTicks = 24;
-    const knee = 500; // users where queueing kicks in
+    const knee = edgeAbsorbs ? 100_000 : 500;          // edge-cached origin barely sees load
+    const stressMult = edgeAbsorbs ? 0.04 : 1.8;        // flatten the curve under CDN
+    const jitterScale = edgeAbsorbs ? 0.05 : 0.15;
+
     for (let t = 1; t <= totalTicks && !cancelRef.current; t++) {
       const ramp = t / totalTicks;
       const users = Math.round(targetUsers * ramp);
-      // M/M/1-ish curve: rt = base * (1 + (u/knee)^1.6) + jitter
       const stress = users <= knee ? 0 : Math.pow((users - knee) / knee, 1.6);
-      const jitter = (Math.random() - 0.5) * base * 0.15;
-      const rt = Math.max(20, base * (1 + stress * 1.8) + jitter);
+      const jitter = (Math.random() - 0.5) * base * jitterScale;
+      const rt = Math.max(20, base * (1 + stress * stressMult) + jitter);
       setData(prev => [...prev, { t, rt, users }].slice(-40));
       await new Promise(r => setTimeout(r, 220));
     }
@@ -67,9 +81,11 @@ export function StressTab({ url }: { url: string }) {
   const last = data[data.length - 1];
   const status: { label: string; tone: "good" | "warn" | "bad" } = !last
     ? { label: "Idle", tone: "good" }
-    : last.rt < 300 ? { label: "Server stable", tone: "good" }
-    : last.rt < 800 ? { label: "Degrading", tone: "warn" }
-    : { label: "Failing", tone: "bad" };
+    : (cdnProtected && !bypassCache)
+      ? { label: "Edge absorbing load", tone: "good" }
+      : last.rt < 300 ? { label: "Server stable", tone: "good" }
+      : last.rt < 800 ? { label: "Degrading", tone: "warn" }
+      : { label: "Failing", tone: "bad" };
 
   if (waf) {
     return (
@@ -96,9 +112,9 @@ export function StressTab({ url }: { url: string }) {
           </div>
         </Card>
         <EducationCallout title="Why this is good news">
-          Production-grade sites (banks, exchanges, large SaaS) sit behind a Web Application Firewall that
-          identifies synthetic load and rejects it before it reaches the origin. A clean 429/403 here means
-          attackers can't trivially exhaust your servers either.
+          Production-grade sites sit behind a Web Application Firewall that identifies synthetic load and
+          rejects it before it reaches the origin. A clean 429/403 here means attackers can't trivially
+          exhaust your servers either.
         </EducationCallout>
       </div>
     );
@@ -106,6 +122,25 @@ export function StressTab({ url }: { url: string }) {
 
   return (
     <div>
+      {cdnProtected && (
+        <Card className="p-4 mb-4 bg-success/5 border-success/30">
+          <div className="flex items-start gap-3">
+            <ShieldCheck className="h-5 w-5 text-success mt-0.5 shrink-0" />
+            <div className="flex-1 text-sm">
+              <div className="font-semibold mb-1">
+                {cloudflareDetected ? "Cloudflare edge cache detected" : "Edge / CDN protection detected"}
+                {baselineTtfb !== null && <span className="text-muted-foreground font-normal"> · baseline TTFB {baselineTtfb}ms</span>}
+              </div>
+              <p className="text-muted-foreground">
+                Your origin is shielded by an edge layer. By default the simulation reflects this and shows a
+                flat curve — turn on <em>Simulate Cache Miss / WAF Bypass</em> to see what would happen if
+                traffic skipped the cache and hit your raw origin server.
+              </p>
+            </div>
+          </div>
+        </Card>
+      )}
+
       <Card className="p-6 bg-card border-border">
         <div className="grid lg:grid-cols-[1fr_280px] gap-6">
           <div>
@@ -152,24 +187,65 @@ export function StressTab({ url }: { url: string }) {
                 <span>10</span><span>10,000</span>
               </div>
             </div>
+
+            {cdnProtected && (
+              <div className="flex items-start justify-between gap-3 rounded-lg border border-border/60 bg-muted/30 p-3">
+                <div className="text-xs">
+                  <div className="font-medium text-foreground">Simulate Cache Miss / WAF Bypass</div>
+                  <div className="text-muted-foreground mt-0.5">Model raw origin behavior with no edge protection.</div>
+                </div>
+                <Switch checked={bypassCache} onCheckedChange={setBypassCache} disabled={running} />
+              </div>
+            )}
+
             <Button onClick={start} disabled={running} className="w-full">
               {running ? "Probing…" : "Start live test"}
             </Button>
             <div className="rounded-lg bg-muted/40 p-3 text-xs space-y-2">
-              <div className="flex justify-between"><span className="text-muted-foreground">Baseline TTFB</span><span className="font-mono tabular-nums">{baseline ? `${baseline.toFixed(0)}ms` : "—"}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Baseline TTFB</span><span className="font-mono tabular-nums">{baseline ? `${baseline.toFixed(0)}ms` : baselineTtfb ? `${baselineTtfb}ms` : "—"}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">Peak response</span><span className="font-mono tabular-nums">{data.length ? `${Math.max(...data.map(d => d.rt)).toFixed(0)}ms` : "—"}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">Active users</span><span className="font-mono tabular-nums">{last?.users.toLocaleString() ?? "—"}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Edge protection</span><span className="font-mono tabular-nums">{cdnProtected ? (bypassCache ? "bypassed" : "active") : "none"}</span></div>
             </div>
+          </div>
+        </div>
+      </Card>
+
+      <Card className="mt-4 p-5 bg-card border-border">
+        <h3 className="text-sm font-semibold mb-3">What this curve means</h3>
+        <div className="space-y-3 text-xs">
+          <div>
+            <span className="text-foreground font-semibold">The Cause · </span>
+            <span className="text-muted-foreground">
+              {(cdnProtected && !bypassCache)
+                ? "The CDN is answering most requests from a cached copy near the user — your origin server is barely touched, no matter how many users arrive."
+                : "Every user request hits your origin server directly. Past a saturation point, requests start queueing behind slow database calls and CPU work."}
+            </span>
+          </div>
+          <div>
+            <span className="text-warning font-semibold">The Impact · </span>
+            <span className="text-muted-foreground">
+              {(cdnProtected && !bypassCache)
+                ? "Page stays fast worldwide, origin bandwidth bill stays low, and a sudden traffic spike doesn't take you offline."
+                : "Once concurrency passes the knee, every extra user makes every other user wait longer — checkout, signup, search all start timing out."}
+            </span>
+          </div>
+          <div>
+            <span className="text-success font-semibold">The Solution · </span>
+            <span className="text-muted-foreground">
+              {(cdnProtected && !bypassCache)
+                ? "Already in great shape. Keep cache TTLs high for static assets and toggle Cache Bypass occasionally to confirm origin can still handle worst-case load."
+                : "Put a CDN in front of static assets, add an HTTP cache (Varnish / Cloudflare) for cacheable pages, and horizontally scale the app behind a load balancer."}
+            </span>
           </div>
         </div>
       </Card>
 
       <EducationCallout title="At what point does your server start dropping requests?">
         We measure a gentle baseline first, then model the latency curve as concurrency climbs toward
-        <strong> {targetUsers.toLocaleString()}</strong> users. Past the saturation knee, every extra user
-        makes every other user wait longer — requests queue behind slow database calls and the curve
-        bends non-linearly. If the target site sits behind a WAF that throttles us, we surface that as
-        a protected state instead of a false failure.
+        <strong> {targetUsers.toLocaleString()}</strong> users. {cdnProtected
+          ? "Because we detected an edge cache, the default simulation shows your origin staying flat — flip Cache Bypass to see the unprotected scenario."
+          : "Past the saturation knee, every extra user makes every other user wait longer — requests queue behind slow database calls and the curve bends non-linearly."}
       </EducationCallout>
     </div>
   );

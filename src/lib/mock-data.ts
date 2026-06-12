@@ -87,9 +87,7 @@ export const archNodes: ArchNode[] = [
 
 export const archEdges: [string, string][] = [
   ["browser", "cdn"],
-  ["browser", "cloudflare"],
   ["cdn", "lb"],
-  ["cloudflare", "lb"],
   ["lb", "server"],
   ["server", "db"],
   ["server", "api"],
