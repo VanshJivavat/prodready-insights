@@ -51,40 +51,39 @@ export const securityChecks = [
   { name: "Secure Cookie Flags", pass: false, risk: "Cookies without HttpOnly/Secure can be stolen by JavaScript or sent over plain HTTP." },
 ];
 
-// Cost
-export function costBreakdown(monthlyVisitors: number) {
-  const gbPerVisit = 0.004;
-  const bandwidthGb = monthlyVisitors * gbPerVisit;
-  const bandwidth = bandwidthGb * 0.09;
-  const computeUnoptimized = monthlyVisitors * 0.00012;
-  const computeOptimized = monthlyVisitors * 0.00003;
+// Cost — driven by real page size discovered in the Speed audit.
+// pageSizeKb defaults to 50 KB if no audit has run yet (lightweight baseline page).
+export function costBreakdown(monthlyVisitors: number, pageSizeKb = 50) {
+  const EGRESS_PER_GB = 0.08;            // standard cloud egress rate
+  const COMPUTE_UNOPT_BASE = 60;         // origin-bound high-tier runtime ($/mo)
+  const COMPUTE_OPT_BASE = 15;           // edge-cached, 10% origin hit ($/mo)
+  const ORIGIN_HIT_RATIO = 0.10;         // 90% absorbed at edge cache
+
+  const bytesPerVisit = pageSizeKb * 1024;
+  const totalGb = (monthlyVisitors * bytesPerVisit) / (1024 ** 3);
+  const bandwidth = totalGb * EGRESS_PER_GB;
+
+  // Unoptimized: every request hits origin → high-tier runtime plus per-visit overhead.
+  const computeUnoptimized = COMPUTE_UNOPT_BASE + monthlyVisitors * 0.00012;
+  // Optimized: only 10% reach origin → small runtime tier + reduced per-visit overhead.
+  const computeOptimized = COMPUTE_OPT_BASE + monthlyVisitors * 0.00012 * ORIGIN_HIT_RATIO;
+
+  const optimizedBandwidth = bandwidth * 0.4; // CDN cuts egress ~60%
+  const savings = (computeUnoptimized - computeOptimized) + (bandwidth - optimizedBandwidth);
+
   return {
+    pageSizeKb,
+    totalGb,
     bandwidth,
+    optimizedBandwidth,
     computeUnoptimized,
     computeOptimized,
-    savings: (computeUnoptimized - computeOptimized) + bandwidth * 0.6,
+    savings,
+    rates: { egressPerGb: EGRESS_PER_GB, computeUnoptBase: COMPUTE_UNOPT_BASE, computeOptBase: COMPUTE_OPT_BASE, originHitRatio: ORIGIN_HIT_RATIO },
   };
 }
 
-// Architecture
-export interface ArchNode {
-  id: string;
-  label: string;
-  detected: boolean;
-  x: number;
-  y: number;
-  note: string;
-}
-
-export const archNodes: ArchNode[] = [
-  { id: "browser", label: "Browser", detected: true, x: 60, y: 160, note: "End user" },
-  { id: "cdn", label: "CDN", detected: false, x: 220, y: 160, note: "Not detected — assets served from origin" },
-  { id: "lb", label: "Load Balancer", detected: false, x: 380, y: 160, note: "Not detected — single point of failure" },
-  { id: "server", label: "App Server", detected: true, x: 540, y: 160, note: "Origin reachable" },
-  { id: "db", label: "Database", detected: true, x: 700, y: 90, note: "Inferred from response patterns" },
-  { id: "api", label: "3rd-party APIs", detected: true, x: 700, y: 230, note: "Analytics, fonts" },
-];
-
+// Architecture edges (node positions come from runSpeedAudit so they reflect detected infra).
 export const archEdges: [string, string][] = [
   ["browser", "cdn"],
   ["cdn", "lb"],

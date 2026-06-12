@@ -113,6 +113,7 @@ export const runSpeedAudit = createServerFn({ method: "POST" })
     let cfRay = "";
     let ok = false;
     let status = 0;
+    let vercelHeader = "";
     try {
       const res = await safeFetch(url);
       ttfb = Date.now() - start;
@@ -122,6 +123,7 @@ export const runSpeedAudit = createServerFn({ method: "POST" })
       xCache = res.headers.get("x-cache") ?? res.headers.get("cf-cache-status") ?? "";
       xPowered = res.headers.get("x-powered-by") ?? "";
       cfRay = res.headers.get("cf-ray") ?? "";
+      vercelHeader = res.headers.get("x-vercel-cache") ?? res.headers.get("x-vercel-id") ?? "";
       const body = await res.arrayBuffer();
       bytes = body.byteLength;
       downloadMs = Date.now() - start - ttfb;
@@ -149,17 +151,19 @@ export const runSpeedAudit = createServerFn({ method: "POST" })
     const cloudflareDetected = !!cfRay || /cloudflare/i.test(server) || /cloudflare/i.test(via);
     const fastlyDetected = /fastly/i.test(server) || /fastly/i.test(via) || /fastly/i.test(xCache);
     const akamaiDetected = /akamai/i.test(server) || /akamai/i.test(via);
-    const otherCdn = /cloudfront|vercel|netlify|bunny|keycdn|stackpath/i.test(server + via + xCache);
-    const cdnDetected = cloudflareDetected || fastlyDetected || akamaiDetected || otherCdn || !!xCache;
+    const vercelDetected = !!vercelHeader || /vercel/i.test(server) || /vercel/i.test(xPowered);
+    const otherCdn = /cloudfront|netlify|bunny|keycdn|stackpath/i.test(server + via + xCache);
+    const cdnDetected = cloudflareDetected || fastlyDetected || akamaiDetected || vercelDetected || otherCdn || !!xCache;
     const lbDetected = cdnDetected || /aws|gcp|nginx|envoy|haproxy/i.test(server) || !!via;
 
     const cdnLabel = cloudflareDetected ? "Cloudflare CDN/WAF"
       : fastlyDetected ? "Fastly CDN"
       : akamaiDetected ? "Akamai CDN"
+      : vercelDetected ? "Vercel Edge"
       : "CDN / Edge Cache";
 
     const cdnNote = cdnDetected
-      ? `Detected via ${cloudflareDetected ? "cf-ray header" : fastlyDetected ? "Fastly headers" : akamaiDetected ? "Akamai headers" : (xCache || server || via)}. Edge caching absorbs traffic before it reaches your origin.`
+      ? `Detected via ${cloudflareDetected ? "cf-ray header" : fastlyDetected ? "Fastly headers" : akamaiDetected ? "Akamai headers" : vercelDetected ? "x-vercel-* headers" : (xCache || server || via)}. Edge caching absorbs traffic before it reaches your origin.`
       : "No CDN headers found. Every asset request travels to your origin, multiplying load and latency for distant users.";
 
     const lbNote = cdnDetected
@@ -168,35 +172,44 @@ export const runSpeedAudit = createServerFn({ method: "POST" })
       ? "Reverse proxy / load balancer inferred from response headers."
       : "No load balancer detected — your origin is a single point of failure.";
 
+    // Origin app server label — only name a specific platform when its headers are present.
+    const originLabel = vercelDetected ? "Vercel Serverless"
+      : /cloudflare/i.test(server) ? "Cloudflare Worker"
+      : server ? server.split(" ")[0].slice(0, 18)
+      : "Origin App Server";
+    const originDetected = vercelDetected || (ok && !!server);
+
     const archNodes = [
-      // EDGE zone — actually detected from headers
+      // EDGE zone — actually detected from headers. Row at y=110.
       { id: "browser", label: "Browser", detected: true, inferred: false, zone: "edge",
-        x: 80, y: 110, note: "End user device.",
+        x: 130, y: 110, note: "End user device.",
         cause: "Every visitor starts here.", impact: "Slow networks mean every wasted byte costs real seconds.", solution: "Optimize for the slowest 25% of users, not the fastest." },
       { id: "cdn", label: cdnLabel, detected: cdnDetected, inferred: false, zone: "edge",
-        x: 260, y: 110, note: cdnNote,
+        x: 370, y: 110, note: cdnNote,
         cause: cdnDetected ? "A CDN sits between visitors and your server, serving cached copies from a nearby city." : "A visitor in Tokyo and one in São Paulo both wait for your single origin server.",
         impact: cdnDetected ? "Lower latency worldwide, reduced origin bandwidth, automatic DDoS absorption." : "Sluggish pages for international users; one viral moment can knock the origin offline.",
         solution: cdnDetected ? "Already in place — keep cache TTLs high for static assets." : "Put Cloudflare (free tier) or Fastly in front of your origin. Setup is ~15 minutes." },
       { id: "lb", label: "Edge Load Balancer", detected: lbDetected, inferred: false, zone: "edge",
-        x: 440, y: 110, note: lbNote,
+        x: 610, y: 110, note: lbNote,
         cause: lbDetected ? "A load balancer routes each request to a healthy backend instance." : "All traffic funnels into one server with no fallback.",
         impact: lbDetected ? "Zero-downtime deploys, automatic failover when an instance dies." : "If the origin restarts or crashes, the entire site goes dark until a human intervenes.",
         solution: lbDetected ? "Healthy — periodically test failover." : "Run at least two app instances behind a managed load balancer (AWS ALB, Cloudflare LB, Fly.io)." },
 
-      // BACKEND zone — inferred, not detectable from outside
-      { id: "server", label: server ? server.split(" ")[0].slice(0, 18) : "Application Server", detected: ok, inferred: true, zone: "backend",
-        x: 260, y: 240, note: ok ? `Origin reachable (HTTP ${status})${server ? ` · ${server}` : ""}` : "Origin unreachable from probe.",
-        cause: "Your app code runs here, handling requests and rendering pages.", impact: "Slow code or memory leaks cascade into every user request.", solution: "Add an APM (Sentry, Datadog) to surface slow endpoints in production." },
-      { id: "db", label: "Database", detected: true, inferred: true, zone: "backend",
-        x: 440, y: 240, note: "Standard production pattern — exact engine cannot be detected from outside.",
+      // BACKEND zone — inferred unless platform headers (e.g. x-vercel-*) explicitly identify it. Row at y=260.
+      { id: "server", label: originLabel, detected: originDetected, inferred: !originDetected, zone: "backend",
+        x: 370, y: 260, note: vercelDetected ? `Vercel headers detected (${vercelHeader || "x-vercel-*"}).` : ok ? `Origin reachable (HTTP ${status})${server ? ` · ${server}` : ""}` : "Origin unreachable from probe.",
+        cause: "This represents the main processing environment for your application — whether it runs on AWS, GCP, Vercel, Cloudflare Workers, or on-premise containers. Your code executes here, handling each request and rendering pages.",
+        impact: "Slow code, memory leaks, or single-instance setups cascade into every user request and can take the whole site offline.",
+        solution: "Add an APM (Sentry, Datadog) to surface slow endpoints in production and run at least two instances behind a load balancer." },
+      { id: "db", label: "Database", detected: false, inferred: true, zone: "backend",
+        x: 130, y: 260, note: "Standard production pattern — exact engine cannot be detected from outside.",
         cause: "Most slow pages are actually slow database queries hiding behind a fast-looking API.", impact: "An un-indexed query on a 1M-row table can stall every concurrent visitor.", solution: "Enable slow query logs; add indexes for any query over 100ms." },
-      { id: "api", label: "3rd-party APIs", detected: true, inferred: true, zone: "backend",
-        x: 620, y: 240, note: xPowered ? `Powered-By: ${xPowered} · plus likely analytics, payments, fonts.` : "Likely: analytics, payments, fonts, email.",
+      { id: "api", label: "3rd-party APIs", detected: false, inferred: true, zone: "backend",
+        x: 610, y: 260, note: xPowered ? `Powered-By: ${xPowered} · plus likely analytics, payments, fonts.` : "Likely: analytics, payments, fonts, email.",
         cause: "Your page secretly waits on Google Analytics, Stripe, fonts, etc.", impact: "If one third-party slows down, your whole page slows down with it.", solution: "Load non-critical scripts with async/defer; self-host fonts." },
     ];
 
-    return { reachable: ok, status, ttfb, bytes, server, via, xCache, xPowered, cfRay, cloudflareDetected, cdnDetected, metrics, archNodes };
+    return { reachable: ok, status, ttfb, bytes, server, via, xCache, xPowered, cfRay, vercelDetected, cloudflareDetected, cdnDetected, metrics, archNodes };
   });
 
 // ---------- STRESS / LATENCY PROBE ----------
