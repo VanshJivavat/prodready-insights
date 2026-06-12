@@ -108,7 +108,7 @@ function Dashboard() {
       case "security": return <SecurityTab url={url} />;
       case "stress": return <LicenseGate feature="Live Stress Test"><StressTab url={url} /></LicenseGate>;
       case "balancer": return <LicenseGate feature="Load Balancer Simulation"><BalancerTab /></LicenseGate>;
-      case "cost": return <CostTab />;
+      case "cost": return <CostTab pageSizeBytes={speedQ.data?.bytes} visitors={costVisitors} onVisitorsChange={setCostVisitors} />;
       case "architecture": return <ArchitectureTab url={url} />;
       default: return null;
     }
